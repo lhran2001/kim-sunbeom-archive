@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>KSB Archive — 로컬 동기화</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#060504; --bg2:#0d0b09; --bg3:#131009;
+  --logic:#7EA4C8; --rest:#C8A87E; --shadows:#B87EA8;
+  --t1:rgba(255,255,255,0.88); --t2:rgba(255,255,255,0.55);
+  --t3:rgba(255,255,255,0.28); --line:rgba(255,255,255,0.08);
+  --gold:rgba(200,175,120,0.85);
+}
+body{
+  background:var(--bg); color:var(--t1);
+  font-family:'DM Mono','Malgun Gothic',monospace;
+  min-height:100vh; padding:0;
+}
+
+/* ── 상단바 ── */
+#topbar{
+  position:sticky; top:0;
+  background:rgba(6,5,4,0.95); backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);
+  padding:14px 28px; display:flex; align-items:center;
+  justify-content:space-between; z-index:100;
+}
+#topbar h1{
+  font-size:11px; letter-spacing:0.28em; color:var(--t2);
+  font-weight:400; text-transform:uppercase;
+}
+#sync-all-btn{
+  padding:8px 22px; font-family:inherit; font-size:9px;
+  letter-spacing:0.22em; text-transform:uppercase;
+  color:#0a0908; background:var(--rest);
+  border:none; border-radius:2px; cursor:pointer;
+  transition:background 0.2s;
+}
+#sync-all-btn:hover{background:#d4b48a}
+#sync-all-btn:disabled{background:rgba(200,168,126,0.3);color:rgba(0,0,0,0.4);cursor:not-allowed}
+
+/* ── 지원 여부 배너 ── */
+#compat-warn{
+  background:rgba(184,100,100,0.12); border:1px solid rgba(184,100,100,0.3);
+  color:rgba(255,140,140,0.85); padding:12px 28px;
+  font-size:10px; letter-spacing:0.06em; display:none;
+}
+
+/* ── 메인 레이아웃 ── */
+#main{
+  max-width:960px; margin:0 auto;
+  padding:36px 28px 60px;
+  display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px;
+}
+
+/* ── 룸 카드 ── */
+.room-card{
+  background:var(--bg2);
+  border:1px solid var(--line);
+  border-radius:4px; overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.room-header{
+  padding:16px 16px 12px;
+  border-bottom:1px solid var(--line);
+}
+.room-accent{height:2px; margin-bottom:12px; border-radius:1px;}
+.room-label{
+  font-size:8px; letter-spacing:0.32em;
+  text-transform:uppercase; margin-bottom:6px;
+}
+.room-title{
+  font-family:'DM Serif Display',serif; font-style:italic;
+  font-size:17px; color:var(--t1); margin-bottom:4px;
+}
+.room-desc{font-size:9px; color:var(--t3); line-height:1.6;}
+
+/* ── 폴더 선택 영역 ── */
+.folder-zone{
+  padding:14px 16px; border-bottom:1px solid var(--line);
+}
+.folder-path{
+  font-size:9px; color:var(--t3); letter-spacing:0.05em;
+  margin-bottom:10px; min-height:14px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.folder-path.selected{color:var(--t2);}
+.pick-btn{
+  width:100%; padding:8px; font-family:inherit;
+  font-size:9px; letter-spacing:0.18em; text-transform:uppercase;
+  background:none; border:1px solid var(--line);
+  color:var(--t3); border-radius:2px; cursor:pointer;
+  transition:border-color 0.15s, color 0.15s;
+}
+.pick-btn:hover{border-color:rgba(255,255,255,0.2);color:var(--t2);}
+
+/* ── 파일 목록 ── */
+.file-list{
+  flex:1; overflow-y:auto; padding:10px 16px;
+  min-height:120px; max-height:260px;
+}
+.file-list::-webkit-scrollbar{width:2px;}
+.file-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);}
+.file-item{
+  display:flex; align-items:center; gap:8px;
+  padding:5px 0; border-bottom:1px solid rgba(255,255,255,0.03);
+  font-size:9px; color:var(--t2);
+}
+.file-item:last-child{border-bottom:none;}
+.file-icon{font-size:10px; flex-shrink:0; opacity:0.6;}
+.file-name{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.file-size{flex-shrink:0; color:var(--t3); font-size:8px;}
+.file-list-empty{
+  font-size:9px; color:var(--t3); text-align:center;
+  padding:28px 0; letter-spacing:0.08em;
+}
+
+/* ── 룸 하단 상태 ── */
+.room-footer{
+  padding:10px 16px; border-top:1px solid var(--line);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.room-status{font-size:8px; color:var(--t3); letter-spacing:0.08em;}
+.room-sync-btn{
+  padding:5px 14px; font-family:inherit; font-size:8px;
+  letter-spacing:0.18em; text-transform:uppercase;
+  background:none; border:1px solid var(--line);
+  color:var(--t3); border-radius:2px; cursor:pointer;
+  transition:all 0.15s;
+}
+.room-sync-btn:hover{color:var(--t2); border-color:rgba(255,255,255,0.2);}
+.room-sync-btn:disabled{opacity:0.3; cursor:not-allowed;}
+
+/* ── 하단 상태 패널 ── */
+#status-panel{
+  position:fixed; bottom:0; left:0; right:0;
+  background:rgba(6,5,4,0.96); backdrop-filter:blur(10px);
+  border-top:1px solid var(--line);
+  padding:10px 28px; display:flex; align-items:center;
+  gap:18px; z-index:100;
+}
+#status-dot{
+  width:6px; height:6px; border-radius:50%;
+  background:rgba(255,255,255,0.15); flex-shrink:0;
+  transition:background 0.3s;
+}
+#status-dot.active{background:#7EC87E; box-shadow:0 0 6px #7EC87E;}
+#status-dot.syncing{background:var(--rest); box-shadow:0 0 6px var(--rest);}
+#status-dot.error{background:#C87E7E; box-shadow:0 0 6px #C87E7E;}
+#status-text{font-size:9px; color:var(--t2); letter-spacing:0.08em; flex:1;}
+#auto-sync-wrap{display:flex; align-items:center; gap:8px;}
+#auto-sync-wrap label{font-size:9px; color:var(--t3); letter-spacing:0.08em;}
+#auto-interval{
+  background:none; border:1px solid var(--line);
+  color:var(--t2); font-family:inherit; font-size:9px;
+  padding:4px 8px; border-radius:2px; width:60px;
+}
+#auto-toggle{
+  padding:5px 12px; font-family:inherit; font-size:8px;
+  letter-spacing:0.15em; text-transform:uppercase;
+  background:none; border:1px solid var(--line);
+  color:var(--t3); border-radius:2px; cursor:pointer;
+  transition:all 0.15s;
+}
+#auto-toggle.on{
+  border-color:rgba(126,200,126,0.4); color:#7EC87E;
+  background:rgba(126,200,126,0.06);
+}
+#open-site-btn{
+  padding:5px 16px; font-family:inherit; font-size:8px;
+  letter-spacing:0.18em; text-transform:uppercase;
+  color:#0a0908; background:var(--gold);
+  border:none; border-radius:2px; cursor:pointer;
+  transition:background 0.2s;
+}
+#open-site-btn:hover{background:rgba(200,175,120,1);}
+
+/* ── 미리보기 썸네일 ── */
+.thumb{
+  width:22px; height:22px; object-fit:cover;
+  border-radius:1px; flex-shrink:0; opacity:0.7;
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>KIM SUNBEOM ARCHIVE — 로컬 동기화</h1>
+  <button id="sync-all-btn">전체 동기화</button>
+</div>
+
+<div id="compat-warn">
+  ⚠️ 이 도구는 Chrome / Edge 브라우저에서만 작동합니다. (File System Access API 필요)
+</div>
+
+<div id="main">
+  <!-- 거실 -->
+  <div class="room-card" id="card-living">
+    <div class="room-header">
+      <div class="room-accent" style="background:var(--rest)"></div>
+      <div class="room-label" style="color:var(--rest)">02 Rest &amp; Texture</div>
+      <div class="room-title">거실</div>
+      <div class="room-desc">음악, 공유하고 싶은 자료<br>이미지 · 오디오 · 링크 파일</div>
+    </div>
+    <div class="folder-zone">
+      <div class="folder-path" id="path-living">폴더를 선택하세요</div>
+      <button class="pick-btn" onclick="pickFolder('living')">📂 폴더 선택</button>
+    </div>
+    <div class="file-list" id="list-living">
+      <div class="file-list-empty">폴더를 선택하면 파일이 표시됩니다</div>
+    </div>
+    <div class="room-footer">
+      <span class="room-status" id="status-living">대기 중</span>
+      <button class="room-sync-btn" onclick="syncRoom('living')" disabled id="btn-living">동기화</button>
+    </div>
+  </div>
+
+  <!-- 서재 -->
+  <div class="room-card" id="card-study">
+    <div class="room-header">
+      <div class="room-accent" style="background:var(--logic)"></div>
+      <div class="room-label" style="color:var(--logic)">01 Logic &amp; Principle</div>
+      <div class="room-title">서재</div>
+      <div class="room-desc">포트폴리오, 작업물<br>이미지 · PDF · 문서</div>
+    </div>
+    <div class="folder-zone">
+      <div class="folder-path" id="path-study">폴더를 선택하세요</div>
+      <button class="pick-btn" onclick="pickFolder('study')">📂 폴더 선택</button>
+    </div>
+    <div class="file-list" id="list-study">
+      <div class="file-list-empty">폴더를 선택하면 파일이 표시됩니다</div>
+    </div>
+    <div class="room-footer">
+      <span class="room-status" id="status-study">대기 중</span>
+      <button class="room-sync-btn" onclick="syncRoom('study')" disabled id="btn-study">동기화</button>
+    </div>
+  </div>
+
+  <!-- 침실 -->
+  <div class="room-card" id="card-bedroom">
+    <div class="room-header">
+      <div class="room-accent" style="background:var(--shadows)"></div>
+      <div class="room-label" style="color:var(--shadows)">03 Shadows</div>
+      <div class="room-title">침실</div>
+      <div class="room-desc">개인적인 자료, 비공개 기록<br>이미지 · 메모 · 개인 파일</div>
+    </div>
+    <div class="folder-zone">
+      <div class="folder-path" id="path-bedroom">폴더를 선택하세요</div>
+      <button class="pick-btn" onclick="pickFolder('bedroom')">📂 폴더 선택</button>
+    </div>
+    <div class="file-list" id="list-bedroom">
+      <div class="file-list-empty">폴더를 선택하면 파일이 표시됩니다</div>
+    </div>
+    <div class="room-footer">
+      <span class="room-status" id="status-bedroom">대기 중</span>
+      <button class="room-sync-btn" onclick="syncRoom('bedroom')" disabled id="btn-bedroom">동기화</button>
+    </div>
+  </div>
+</div>
+
+<div id="status-panel">
+  <div id="status-dot"></div>
+  <span id="status-text">준비됨 — 폴더를 선택하고 동기화하세요</span>
+  <div id="auto-sync-wrap">
+    <label>자동 동기화</label>
+    <input id="auto-interval" type="number" value="30" min="5" max="3600" title="초 단위">
+    <label>초</label>
+    <button id="auto-toggle" onclick="toggleAuto()">자동 OFF</button>
+  </div>
+  <button id="open-site-btn" onclick="openSite()">아카이브 열기 →</button>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════
+   상수 / 상태
+══════════════════════════════════════════════════ */
+const STORAGE_KEY = 'ksb_local_content';
+const META_KEY    = 'ksb_sync_meta';
+
+const EXT = {
+  image: ['.jpg','.jpeg','.png','.gif','.webp','.avif','.bmp'],
+  audio: ['.mp3','.wav','.ogg','.flac','.m4a','.aac'],
+  video: ['.mp4','.webm','.mov'],
+  doc  : ['.pdf'],
+  link : ['.txt','.json'],
+};
+
+const ROOM_LABELS = { living:'거실', study:'서재', bedroom:'침실' };
+
+// 폴더 핸들 (세션 중 유지)
+const handles = { living: null, study: null, bedroom: null };
+
+// 자동 동기화 타이머
+let autoTimer = null;
+
+/* ══════════════════════════════════════════════════
+   호환성 체크
+══════════════════════════════════════════════════ */
+if (!window.showDirectoryPicker) {
+  document.getElementById('compat-warn').style.display = 'block';
+}
+
+/* ══════════════════════════════════════════════════
+   유틸
+══════════════════════════════════════════════════ */
+function extOf(name){ return name.slice(name.lastIndexOf('.')).toLowerCase(); }
+function typeOf(name){
+  const e = extOf(name);
+  for(const [t,exts] of Object.entries(EXT)) if(exts.includes(e)) return t;
+  return null;
+}
+function fmtSize(bytes){
+  if(bytes<1024)      return bytes+'B';
+  if(bytes<1048576)   return (bytes/1024).toFixed(1)+'KB';
+  return (bytes/1048576).toFixed(1)+'MB';
+}
+function fileIcon(type){
+  return { image:'🖼', audio:'🎵', video:'▶', doc:'📄', link:'🔗' }[type] || '📎';
+}
+function setStatus(text, state='idle'){
+  const dot  = document.getElementById('status-dot');
+  const span = document.getElementById('status-text');
+  span.textContent = text;
+  dot.className = state==='active'?'active': state==='syncing'?'syncing': state==='error'?'error':'';
+}
+function setRoomStatus(room, text){ document.getElementById('status-'+room).textContent = text; }
+
+/* ══════════════════════════════════════════════════
+   폴더 선택
+══════════════════════════════════════════════════ */
+async function pickFolder(room) {
+  if(!window.showDirectoryPicker){
+    alert('Chrome 또는 Edge 브라우저를 사용해 주세요.');
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode:'read' });
+    handles[room] = handle;
+
+    const pathEl = document.getElementById('path-'+room);
+    pathEl.textContent = handle.name + '/';
+    pathEl.classList.add('selected');
+
+    document.getElementById('btn-'+room).disabled = false;
+    setRoomStatus(room, '폴더 선택됨');
+
+    await previewFiles(room, handle);
+  } catch(e) {
+    if(e.name !== 'AbortError') console.error(e);
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   파일 미리보기
+══════════════════════════════════════════════════ */
+async function previewFiles(room, dirHandle) {
+  const listEl = document.getElementById('list-'+room);
+  listEl.innerHTML = '';
+
+  const files = [];
+  await collectFiles(dirHandle, files);
+
+  if(!files.length){
+    listEl.innerHTML = '<div class="file-list-empty">지원 파일 없음</div>';
+    return;
+  }
+
+  for(const f of files.slice(0,80)){
+    const row = document.createElement('div');
+    row.className = 'file-item';
+
+    if(f.type==='image'){
+      try{
+        const file = await f.handle.getFile();
+        const url  = URL.createObjectURL(file);
+        const img  = document.createElement('img');
+        img.className='thumb'; img.src=url;
+        img.onload=()=>URL.revokeObjectURL(url);
+        row.appendChild(img);
+      }catch{ row.appendChild(makeIcon(f.type)); }
+    } else {
+      row.appendChild(makeIcon(f.type));
+    }
+
+    const nameEl=document.createElement('span'); nameEl.className='file-name';
+    nameEl.textContent=f.name; row.appendChild(nameEl);
+
+    const sizeEl=document.createElement('span'); sizeEl.className='file-size';
+    try{
+      const file=await f.handle.getFile();
+      sizeEl.textContent=fmtSize(file.size);
+    }catch{}
+    row.appendChild(sizeEl);
+
+    listEl.appendChild(row);
+  }
+
+  if(files.length>80){
+    const more=document.createElement('div');
+    more.className='file-list-empty';
+    more.textContent=`+${files.length-80}개 더...`;
+    listEl.appendChild(more);
+  }
+
+  setRoomStatus(room, `${files.length}개 파일`);
+}
+
+function makeIcon(type){
+  const s=document.createElement('span');
+  s.className='file-icon'; s.textContent=fileIcon(type);
+  return s;
+}
+
+async function collectFiles(dirHandle, results, depth=0){
+  if(depth>4) return;
+  for await(const [name, handle] of dirHandle.entries()){
+    if(handle.kind==='directory'){
+      await collectFiles(handle, results, depth+1);
+    } else {
+      const t=typeOf(name);
+      if(t) results.push({ name, handle, type:t });
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   동기화 (방 단위)
+══════════════════════════════════════════════════ */
+async function syncRoom(room) {
+  const handle = handles[room];
+  if(!handle) return;
+
+  const btn = document.getElementById('btn-'+room);
+  btn.disabled = true;
+  setRoomStatus(room, '동기화 중…');
+  setStatus(`[${ROOM_LABELS[room]}] 동기화 중…`, 'syncing');
+
+  try {
+    const content = await buildRoomContent(room, handle);
+
+    // localStorage에 저장 (방별로)
+    const all = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');
+    all[room] = content;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+
+    // 메타 정보 갱신
+    const meta = JSON.parse(localStorage.getItem(META_KEY)||'{}');
+    meta[room] = { updatedAt: new Date().toISOString(), folderName: handle.name,
+                   counts: { images: content.images.length, audios: content.audios.length,
+                             docs: content.docs.length, links: content.links.length } };
+    localStorage.setItem(META_KEY, JSON.stringify(meta));
+
+    const c = meta[room].counts;
+    const summary = [
+      c.images && `이미지 ${c.images}`,
+      c.audios && `오디오 ${c.audios}`,
+      c.docs   && `문서 ${c.docs}`,
+      c.links  && `링크 ${c.links}`,
+    ].filter(Boolean).join(' · ') || '파일 없음';
+
+    setRoomStatus(room, summary);
+    setStatus(`✓ [${ROOM_LABELS[room]}] ${summary}`, 'active');
+  } catch(e) {
+    console.error(e);
+    setRoomStatus(room, '오류 발생');
+    setStatus('동기화 실패: '+e.message, 'error');
+  }
+
+  btn.disabled = false;
+}
+
+async function buildRoomContent(room, dirHandle){
+  const files = [];
+  await collectFiles(dirHandle, files);
+
+  const images=[], audios=[], videos=[], docs=[], links=[];
+  const MAX_SIZE = 50*1024*1024; // 50MB
+
+  for(const f of files){
+    const file = await f.handle.getFile();
+    if(file.size > MAX_SIZE) continue;
+
+    switch(f.type){
+      case 'image': {
+        const b64 = await toBase64(file);
+        if(b64) images.push(b64);
+        break;
+      }
+      case 'audio': {
+        const b64 = await toBase64(file);
+        if(b64) audios.push({ label: nameNoExt(f.name), url: b64 });
+        break;
+      }
+      case 'video': {
+        const url = URL.createObjectURL(file);
+        videos.push({ label: nameNoExt(f.name), url });
+        break;
+      }
+      case 'doc': {
+        const url = URL.createObjectURL(file);
+        docs.push({ label: nameNoExt(f.name), url });
+        break;
+      }
+      case 'link': {
+        const text = await file.text();
+        links.push(...parseLinks(text, f.name));
+        break;
+      }
+    }
+  }
+  return { images, audios, videos, docs, links, updatedAt: new Date().toISOString() };
+}
+
+function toBase64(file){
+  return new Promise((res)=>{
+    const reader=new FileReader();
+    reader.onload=e=>res(e.target.result);
+    reader.onerror=()=>res(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+function nameNoExt(name){ return name.replace(/\.[^.]+$/,''); }
+
+function parseLinks(text, filename){
+  const ext = extOf(filename);
+  if(ext==='.json'){
+    try{
+      const data=JSON.parse(text);
+      if(Array.isArray(data)) return data.map(l=>
+        typeof l==='string' ? {label:nameNoExt(filename),url:l}
+                             : {label:l.label||l.title||'링크',url:l.url||l.href||''}
+      );
+    }catch{}
+  }
+  return text.split('\n').map(l=>l.trim())
+    .filter(l=>l && !l.startsWith('#'))
+    .map(l=>{
+      const [a,b]=l.split('|').map(s=>s.trim());
+      return b?{label:a,url:b}:{label:nameNoExt(filename),url:a};
+    });
+}
+
+/* ══════════════════════════════════════════════════
+   전체 동기화
+══════════════════════════════════════════════════ */
+async function syncAll(){
+  const btn = document.getElementById('sync-all-btn');
+  btn.disabled=true;
+  setStatus('전체 동기화 중…','syncing');
+
+  const rooms = Object.keys(handles).filter(r=>handles[r]);
+  if(!rooms.length){ setStatus('폴더가 선택되지 않았습니다','error'); btn.disabled=false; return; }
+
+  for(const room of rooms) await syncRoom(room);
+
+  const now = new Date().toLocaleTimeString();
+  setStatus(`✓ 전체 동기화 완료 — ${now}`,'active');
+  btn.disabled=false;
+}
+document.getElementById('sync-all-btn').addEventListener('click', syncAll);
+
+/* ══════════════════════════════════════════════════
+   자동 동기화
+══════════════════════════════════════════════════ */
+function toggleAuto(){
+  const btn = document.getElementById('auto-toggle');
+  if(autoTimer){
+    clearInterval(autoTimer);
+    autoTimer=null;
+    btn.textContent='자동 OFF'; btn.className='';
+    setStatus('자동 동기화 중지됨','idle');
+  } else {
+    const sec = parseInt(document.getElementById('auto-interval').value)||30;
+    autoTimer = setInterval(syncAll, sec*1000);
+    btn.textContent='자동 ON'; btn.classList.add('on');
+    setStatus(`자동 동기화 ON — ${sec}초마다`,'active');
+    syncAll();
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   아카이브 열기
+══════════════════════════════════════════════════ */
+function openSite(){
+  // 같은 폴더의 index.html 열기
+  const base = location.href.replace(/\/[^/]*$/, '/');
+  window.open(base+'index.html','_blank');
+}
+
+/* ══════════════════════════════════════════════════
+   이전 동기화 메타 복원 (새로고침 시)
+══════════════════════════════════════════════════ */
+(function restoreMeta(){
+  try{
+    const meta=JSON.parse(localStorage.getItem(META_KEY)||'{}');
+    for(const [room,info] of Object.entries(meta)){
+      const pathEl=document.getElementById('path-'+room);
+      if(!pathEl) continue;
+      pathEl.textContent=info.folderName+'/ (이전 동기화)';
+      pathEl.classList.add('selected');
+      pathEl.style.opacity='0.55';
+      const c=info.counts||{};
+      const summary=[
+        c.images&&`이미지 ${c.images}`,
+        c.audios&&`오디오 ${c.audios}`,
+        c.docs&&`문서 ${c.docs}`,
+        c.links&&`링크 ${c.links}`,
+      ].filter(Boolean).join(' · ');
+      const d=new Date(info.updatedAt);
+      setRoomStatus(room, `${summary} · ${d.toLocaleString()}`);
+    }
+    const rooms=Object.keys(meta);
+    if(rooms.length){
+      setStatus('이전 동기화 데이터 있음 — 폴더를 다시 선택하고 동기화하세요','idle');
+    }
+  }catch{}
+})();
+</script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import { gsap } from 'gsap';
-import { NODES, MODULE_COLORS } from './data/nodes.js';
+import { NODES, CONNECTIONS, MODULE_COLORS } from './data/nodes.js';
 import { Scene }           from './modules/Scene.js';
 import { DataMap }         from './modules/DataMap.js';
 import { Panel }           from './modules/Panel.js';
@@ -20,28 +20,227 @@ let lastDragX = 0, lastDragY = 0; // 직전 프레임 위치 (속도 계산용)
 const DRIFT_SPEED  = 0.00018;     // 자동 궤도 속도 (rad/frame)
 const INERTIA_DECAY = 0.92;       // 관성 감쇠 계수
 
-const MIRROR_MESSAGE =
+let MIRROR_MESSAGE =
 `당신은 12개의 파편을 모두 보았습니다.\n\n` +
 `완벽해 보이는 사람의 내부도\n` +
 `흔들리고 있다는 것.\n\n` +
 `그리고 당신의 시선이 가장 오래 머문 곳이\n` +
 `당신 자신의 내면 지형도였습니다.`;
 
-const SHADOWS_MIRROR_MESSAGE =
+let SHADOWS_MIRROR_MESSAGE =
 `당신은 Shadows의 네 파편을 모두 들여다보았습니다.\n\n` +
 `나태함, 두려움, 미완성, 실패.\n\n` +
 `이것들을 기록한다는 것은\n` +
 `그것들과 함께 살아가기로 했다는 뜻입니다.`;
 
+/* ── 실내 배경 사진 ─────────────────────────────────── */
+let roomImages = { living: '', study: '', bedroom: '' };
+
+function loadRoomImages() {
+  try {
+    const s = localStorage.getItem('ksb_rooms');
+    if (s) roomImages = { ...roomImages, ...JSON.parse(s) };
+  } catch(e) { console.warn('ksb_rooms parse error', e); }
+}
+
+function applyRoomBg(view) {
+  const bg    = document.getElementById('room-bg');
+  const img   = document.getElementById('room-bg-img');
+  const chips = document.getElementById('chips-layer');
+  const url   = roomImages[view] || '';
+
+  if (url && view !== 'outside') {
+    if (img.src !== url) img.src = url;
+    bg.classList.add('visible');
+    chips.classList.add('interior');
+  } else {
+    bg.classList.remove('visible');
+    chips.classList.remove('interior');
+  }
+}
+
+/* ── 관리자 콘텐츠 override ─────────────────────────── */
+function applyContentOverrides() {
+  try {
+    const saved = localStorage.getItem('ksb_content');
+    if (saved) {
+      JSON.parse(saved).forEach(ov => {
+        const node = NODES.find(n => n.id === ov.id);
+        if (!node) return;
+        if (ov.text   !== undefined) node.text   = ov.text;
+        if (ov.body   !== undefined) node.body   = ov.body;
+        if (ov.meta   !== undefined) node.meta   = ov.meta;
+        if (ov.mirror !== undefined) node.mirror = ov.mirror;
+        if (ov.images !== undefined) node.images = ov.images;
+        if (ov.links  !== undefined) node.links  = ov.links;
+      });
+    }
+  } catch(e) { console.warn('ksb_content parse error', e); }
+
+  try {
+    const s = localStorage.getItem('ksb_connections');
+    if (s) {
+      const newConns = JSON.parse(s);
+      CONNECTIONS.splice(0, CONNECTIONS.length, ...newConns);
+    }
+  } catch(e) { console.warn('ksb_connections parse error', e); }
+
+  try {
+    const s = localStorage.getItem('ksb_site');
+    if (s) {
+      const site = JSON.parse(s);
+      if (site.siteTitle) {
+        const el = document.getElementById('topbar-title');
+        if (el) el.textContent = site.siteTitle;
+      }
+      if (site.introName) {
+        const el = document.getElementById('intro-name');
+        if (el) el.textContent = site.introName;
+      }
+      if (site.introSub) {
+        const el = document.getElementById('intro-sub');
+        if (el) el.textContent = site.introSub;
+      }
+      if (site.shadowsMirror) SHADOWS_MIRROR_MESSAGE = site.shadowsMirror;
+      if (site.fullMirror)    MIRROR_MESSAGE         = site.fullMirror;
+    }
+  } catch(e) { console.warn('ksb_site parse error', e); }
+}
+
+/* ── 로컬 폴더 동기화 콘텐츠 로드 ─────────────────── */
+// 방 → 해당 모듈의 노드 ID 매핑
+const LOCAL_ROOM_NODE = {
+  living:  ['r1','r2','r3','r4'],
+  study:   ['l1','l2','l3','l4'],
+  bedroom: ['s1','s2','s3','s4'],
+};
+
+async function applyLocalContent() {
+  // ── 1) JSON 파일 소스 (Node.js watch-local.js 스크립트 사용 시) ──
+  let fileData = null;
+  try {
+    const res = await fetch('./local-content.json', { cache: 'no-store' });
+    if (res.ok) {
+      const j = await res.json();
+      // 빈 placeholder {"_comment":"..."} 는 무시
+      if (j && !j._comment) fileData = j;
+    }
+  } catch { /* 조용히 건너뜀 */ }
+
+  // ── 2) localStorage 소스 (sync-tool.html 사용 시) ──
+  let lsData = null;
+  try {
+    const raw = localStorage.getItem('ksb_local_content');
+    if (raw) lsData = JSON.parse(raw);
+  } catch (e) { console.warn('[LocalSync] localStorage 파싱 오류', e); }
+
+  // 둘 다 없으면 종료
+  if (!fileData && !lsData) return;
+
+  // ── 3) 두 소스 병합: 같은 방은 배열을 합산 ──
+  const merged = {};
+  const rooms = new Set([
+    ...Object.keys(fileData  || {}),
+    ...Object.keys(lsData    || {}),
+  ]);
+
+  for (const room of rooms) {
+    const a = fileData?.[room];
+    const b = lsData?.[room];
+    if (!a && !b) continue;
+
+    merged[room] = {
+      images:    [...(a?.images  || []), ...(b?.images  || [])],
+      audios:    [...(a?.audios  || []), ...(b?.audios  || [])],
+      videos:    [...(a?.videos  || []), ...(b?.videos  || [])],
+      docs:      [...(a?.docs    || []), ...(b?.docs    || [])],
+      links:     [...(a?.links   || []), ...(b?.links   || [])],
+      updatedAt: (a?.updatedAt > b?.updatedAt ? a?.updatedAt : b?.updatedAt) || null,
+    };
+  }
+
+  // ── 4) 노드에 병합된 콘텐츠 적용 ──
+  for (const [room, content] of Object.entries(merged)) {
+    if (!content) continue;
+    const nodeIds = LOCAL_ROOM_NODE[room] || [];
+    if (!nodeIds.length) continue;
+
+    const primaryNode = NODES.find(n => n.id === nodeIds[0]);
+    if (!primaryNode) continue;
+
+    // 이미지 — 첫 번째 노드 갤러리에 누적
+    if (content.images.length) {
+      primaryNode.images = [...(primaryNode.images || []), ...content.images];
+    }
+
+    // 오디오·비디오·문서·링크 → links 배열에 추가
+    const newLinks = [];
+
+    content.audios.forEach(a =>
+      newLinks.push({ label: a.label, url: a.url, _type: 'audio' })
+    );
+    content.videos.forEach(v =>
+      newLinks.push({ label: `▶ ${v.label}`, url: v.url, _type: 'video' })
+    );
+    content.docs.forEach(d =>
+      newLinks.push({ label: `📄 ${d.label}`, url: d.url, _type: 'doc' })
+    );
+    content.links.forEach(l =>
+      newLinks.push({ label: l.label, url: l.url })
+    );
+
+    if (newLinks.length) {
+      primaryNode.links = [...(primaryNode.links || []), ...newLinks];
+    }
+  }
+
+  // ── 5) 동기화 시각 콘솔 표시 ──
+  const latest = Object.values(merged)
+    .filter(Boolean)
+    .map(c => c.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .pop();
+  if (latest) {
+    const d = new Date(latest);
+    console.info(`[LocalSync] ${d.toLocaleString()} 기준 콘텐츠 로드됨`);
+  } else {
+    console.info('[LocalSync] 콘텐츠 로드됨');
+  }
+}
+
+/* ── 설정 마법사 테마 적용 ─────────────────────────── */
+function applySetupTheme() {
+  // 첫 방문이면 setup으로 리디렉션
+  if (!localStorage.getItem('ksb_setup_done')) {
+    window.location.href = './setup.html';
+    return false;
+  }
+  // 색상 테마 적용
+  try {
+    const t = JSON.parse(localStorage.getItem('ksb_theme') || '{}');
+    const r = document.documentElement.style;
+    if (t.logic)   r.setProperty('--logic',   t.logic);
+    if (t.rest)    r.setProperty('--rest',    t.rest);
+    if (t.shadows) r.setProperty('--shadows', t.shadows);
+  } catch(e) {}
+  return true;
+}
+
 /* ── init ──────────────────────────────────────────── */
 async function init() {
+  if (!applySetupTheme()) return;   // 설정 미완료 시 중단
+  loadRoomImages();
+  applyContentOverrides();
+  await applyLocalContent();    // 로컬 폴더 동기화 콘텐츠 적용
   // Scene
   scene = new Scene(document.getElementById('canvas-wrap'));
   await scene.load();
 
   // Modules
   dataMap    = new DataMap(onNodeClick);
-  panel      = new Panel(onRelClick);
+  panel      = new Panel(onRelClick, () => editMode, onContentSave,
+                         () => CONNECTIONS, onConnectionSave);
   connLines  = new ConnectionLines(scene, onNodeClick);
   spaceChips = new SpaceChips(onNodeClick);
   gazeSystem = new GazeSystem(scene.renderer.domElement, onDwell);
@@ -61,14 +260,112 @@ async function init() {
     dataMap.setActive(null);
   });
 
+  // 편집 모드 토글 — 암호 확인 후 진입
+  document.getElementById('edit-toggle').addEventListener('click', () => {
+    if (editMode) {
+      // 편집 종료는 즉시
+      _exitEditMode();
+    } else {
+      _openEditAuth();
+    }
+  });
+
+  // 편집 암호 모달 이벤트
+  const authInput   = document.getElementById('edit-auth-input');
+  const authBackdrop = document.getElementById('edit-auth-backdrop');
+  const confirmEdit = () => {
+    const pw = localStorage.getItem('ksb_pw') || 'archive';
+    if (authInput.value === pw) {
+      authBackdrop.classList.remove('open');
+      authInput.value = '';
+      document.getElementById('edit-auth-err').textContent = '';
+      _enterEditMode();
+    } else {
+      document.getElementById('edit-auth-err').textContent = '비밀번호가 틀렸습니다.';
+      authInput.value = '';
+      authInput.focus();
+    }
+  };
+  document.getElementById('edit-auth-confirm').addEventListener('click', confirmEdit);
+  document.getElementById('edit-auth-cancel').addEventListener('click', () => {
+    authBackdrop.classList.remove('open');
+    authInput.value = '';
+    document.getElementById('edit-auth-err').textContent = '';
+  });
+  authInput.addEventListener('keydown', e => { if (e.key === 'Enter') confirmEdit(); });
+
+  // 침실 밝기 슬라이더 (초기값 적용)
+  const brightnessSlider = document.getElementById('brightness-slider');
+  const brightnessVal    = document.getElementById('brightness-val');
+  scene.setBrightness(brightnessSlider.value / 100);
+  brightnessSlider.addEventListener('input', () => {
+    const v = brightnessSlider.value;
+    brightnessVal.textContent = v + '%';
+    scene.setBrightness(v / 100);
+  });
+
+  const headlightSlider = document.getElementById('headlight-slider');
+  const headlightVal    = document.getElementById('headlight-val');
+  headlightSlider.addEventListener('input', () => {
+    const v = headlightSlider.value;
+    headlightVal.textContent = v + '%';
+    scene.setHeadLight(v / 100);
+  });
+
   // Camera drag
   setupDrag();
 
-  // Intro sequence
+  // Intro sequence + 랜덤 자동재생 (첫 클릭 시)
   startIntro();
+  window.addEventListener('click', _autoPlayOnce, { once: true });
 
   // Render loop
   animate();
+}
+
+/* ── 패널 → 공간 이동 (전역 노출) ──────────────────── */
+window.gotoSpace = function (mod) {
+  const viewMap = { logic: 'study', rest: 'living', shadows: 'bedroom' };
+  const v = viewMap[mod];
+  if (v) setView(v);
+};
+
+/* ── 편집 모드 진입/종료 ─────────────────────────────── */
+function _enterEditMode() {
+  editMode = true;
+  const btn = document.getElementById('edit-toggle');
+  btn.classList.add('active');
+  btn.textContent = '편집 종료';
+  if (panel.currentId) panel.show(panel.currentId);
+}
+function _exitEditMode() {
+  editMode = false;
+  const btn = document.getElementById('edit-toggle');
+  btn.classList.remove('active');
+  btn.textContent = '편집';
+  if (panel.currentId) panel.show(panel.currentId);
+}
+function _openEditAuth() {
+  const backdrop = document.getElementById('edit-auth-backdrop');
+  backdrop.classList.add('open');
+  setTimeout(() => document.getElementById('edit-auth-input').focus(), 100);
+}
+
+/* ── 랜덤 자동재생 ──────────────────────────────────── */
+let _autoPlayDone = false;
+function _autoPlayOnce() {
+  if (_autoPlayDone) return;
+  _autoPlayDone = true;
+  const ytRe = /youtu\.be\/|youtube\.com/;
+  const all = [];
+  NODES.forEach(n => (n.links || []).forEach(l => {
+    if (ytRe.test(l.url)) all.push({ url: l.url, label: l.label || n.text, nodeText: n.text });
+  }));
+  if (!all.length) return;
+  const pick = all[Math.floor(Math.random() * all.length)];
+  setTimeout(() => {
+    if (typeof window.playMusic === 'function') window.playMusic(pick.url, pick.label, pick.nodeText);
+  }, 600);
 }
 
 /* ── intro ─────────────────────────────────────────── */
@@ -173,6 +470,56 @@ function setupDrag() {
   wrap.addEventListener('touchend', up);
 }
 
+/* ── 방별 카메라 프리셋 ─────────────────────────────────
+   각 노드 클릭 시 해당 벽/시점으로 카메라가 이동
+   camX = az / 0.9  (셰이더: az = u_cam.x * 0.9)
+   camY = el / 0.4  (셰이더: el = clamp(u_cam.y*0.4,-0.5,0.5))
+──────────────────────────────────────────────────────── */
+const ROOM_CAM_PRESETS = {
+  // ── 거실 (living) ──
+  r1: { camX:  0.00, camY:  0.00 },  // 소파 정면 (뒷벽 1소점)
+  r2: { camX:  1.75, camY:  0.00 },  // 창문 방향 (오른쪽 벽 1소점)
+  r3: { camX:  0.00, camY: -1.25 },  // 위에서 내려다봄 (테이블·러그)
+  r4: { camX: -1.75, camY:  0.00 },  // 왼쪽 벽 1소점
+  // ── 서재 (study) ──
+  l1: { camX: -1.75, camY:  0.00 },  // 서가 정면
+  l2: { camX:  0.00, camY: -0.50 },  // 책상 위에서
+  l3: { camX:  1.75, camY:  0.00 },  // 오른쪽 벽 (작업등)
+  l4: { camX:  0.00, camY:  0.00 },  // 정면 전체
+  // ── 침실 (bedroom) ──
+  s1: { camX:  0.00, camY: -0.60 },  // 침대 위에서
+  s2: { camX: -1.75, camY:  0.10 },  // 왼쪽 나이트스탠드
+  s3: { camX:  1.75, camY:  0.10 },  // 오른쪽 나이트스탠드
+  s4: { camX:  0.00, camY:  0.00 },  // 정면 헤드보드
+};
+
+// 카메라 프리셋 애니메이션 (가장 짧은 경로로 회전)
+let _camTween = null;
+function animateCamToPreset(preset) {
+  if (_camTween) _camTween.kill();
+
+  // camX는 누적되므로 ±한바퀴(2π/0.9) 안에서 가장 가까운 경로 계산
+  const period = (2 * Math.PI) / 0.9;
+  let targetX  = preset.camX;
+  let diff = targetX - camX;
+  diff = diff - Math.round(diff / period) * period;
+  targetX = camX + diff;
+
+  const obj = { x: camX, y: camY };
+  _camTween = gsap.to(obj, {
+    x: targetX,
+    y: preset.camY,
+    duration: 1.4,
+    ease: 'power3.inOut',
+    onUpdate() {
+      camX = obj.x;
+      camY = obj.y;
+      velX = 0; velY = 0;           // 관성 초기화
+      scene.setUniform('u_cam', [camX, camY]);
+    },
+  });
+}
+
 /* ── view switching ─────────────────────────────────── */
 function setView(view) {
   currentView = view;
@@ -190,15 +537,17 @@ function setView(view) {
   scene.setView(view);
   spaceChips.setView(view);
   connLines.setVisible(isOutside);
+  applyRoomBg(view);
+
+  // 침실일 때만 밝기 슬라이더 표시
+  const bCtrl = document.getElementById('brightness-ctrl');
+  if (bCtrl) bCtrl.classList.toggle('visible', view === 'bedroom');
 
   const labels = {
     outside: 'EXPLORE',
     living: '거실 — REST', study: '서재 — LOGIC', bedroom: '침실 — SHADOWS',
   };
   document.getElementById('topbar-status').textContent = labels[view] ?? '';
-
-  // Shadows mode: animate u_distort up/down
-  const isShadowsView = (view === 'outside'); // distort driven by node selection instead
 }
 
 /* ── node interactions ──────────────────────────────── */
@@ -209,6 +558,11 @@ function onNodeClick(nodeId) {
   // SVG 연결선 + 노드 리스트 딤 효과
   connLines.setActive(nodeId);
   dataMap.dimExcept(nodeId);
+
+  // 실내 뷰에서 카메라 프리셋 이동
+  if (currentView !== 'outside' && ROOM_CAM_PRESETS[nodeId]) {
+    animateCamToPreset(ROOM_CAM_PRESETS[nodeId]);
+  }
 
   // record visit
   const count = dataMap.markVisited(nodeId);
@@ -256,9 +610,78 @@ let _mirrorShown = false;
 let _shadowsMirrorShown = false;
 const _shadowsVisited = new Set();
 
+/* ── 편집 모드 ──────────────────────────────────────── */
+let editMode = false;
+
+function onContentSave(nodeId, changes) {
+  // NODES 배열 직접 업데이트
+  const node = NODES.find(n => n.id === nodeId);
+  if (!node) return;
+  Object.assign(node, changes);
+
+  // localStorage에 저장
+  const content = NODES.map(n => ({
+    id:     n.id,
+    text:   n.text,
+    body:   n.body,
+    meta:   { ...n.meta },
+    mirror: n.mirror,
+    images: n.images || [],
+    links:  n.links  || [],
+  }));
+  localStorage.setItem('ksb_content', JSON.stringify(content));
+
+  // 좌측 목록 텍스트 업데이트
+  document.querySelectorAll(`.node-item[data-id="${nodeId}"] .node-text`)
+    .forEach(el => { el.textContent = changes.text; });
+
+  // 외부뷰 칩 텍스트 업데이트
+  document.querySelectorAll(`.node-chip[data-id="${nodeId}"]`)
+    .forEach(el => { el.textContent = changes.text; });
+
+  // 패널을 뷰 모드로 다시 렌더
+  panel.show(nodeId);
+
+  // 저장 완료 표시 (topbar status 잠깐 변경)
+  const status = document.getElementById('topbar-status');
+  const prev = status.textContent;
+  status.textContent = '저장됨 ✓';
+  setTimeout(() => { status.textContent = prev; }, 1800);
+}
+
 function onRelClick(nodeId) { onNodeClick(nodeId); }
 
-function onDwell(nodeId)    { onNodeClick(nodeId); }
+function onDwell(nodeId) {
+  // 패널 열기
+  onNodeClick(nodeId);
+  // 해당 공간으로 이동
+  const node = NODES.find(n => n.id === nodeId);
+  if (node) {
+    const viewMap = { logic: 'study', rest: 'living', shadows: 'bedroom' };
+    const v = viewMap[node.mod];
+    if (v) setView(v);
+  }
+}
+
+/* ── 연결선 저장 ─────────────────────────────────────── */
+function onConnectionSave(nodeId, connectedIds) {
+  // 이 노드 관련 기존 연결 모두 제거 후 새로 추가
+  const filtered = CONNECTIONS.filter(([a, b]) => a !== nodeId && b !== nodeId);
+  connectedIds.forEach(otherId => filtered.push([nodeId, otherId]));
+  CONNECTIONS.splice(0, CONNECTIONS.length, ...filtered);
+
+  // localStorage 저장
+  localStorage.setItem('ksb_connections', JSON.stringify(CONNECTIONS));
+
+  // SVG 연결선 즉시 재구성
+  connLines.rebuild();
+
+  // 저장 알림
+  const status = document.getElementById('topbar-status');
+  const prev = status.textContent;
+  status.textContent = '연결선 저장됨 ✓';
+  setTimeout(() => { status.textContent = prev; }, 1800);
+}
 
 /* ── render loop ────────────────────────────────────── */
 const canvasWrap = () => document.getElementById('canvas-wrap');
@@ -296,6 +719,9 @@ function animate() {
 
     connLines.update(camX, camY, introProgress);
     updateNodeChips();
+  } else {
+    /* 실내 GLTF 뷰: Three.js 퍼스펙티브 카메라 업데이트 */
+    scene.updateInteriorCamera(camX, camY);
   }
 
   scene.render();

@@ -200,6 +200,14 @@ export class ConnectionLines {
   /* ── 공개 API ──────────────────────────────────────── */
   setVisible(v) { this.visible = v; if (!v) this.svg.style.display = 'none'; }
 
+  /* 연결선 데이터 변경 후 SVG 재구성 */
+  rebuild() {
+    this._nodeEls  = {};
+    this._lineEls  = [];
+    this._activeId = null;
+    this._build();
+  }
+
   // 하위 호환
   highlightNode(id) { this.setActive(id); }
   resetHighlight()   { this.setActive(null); }
