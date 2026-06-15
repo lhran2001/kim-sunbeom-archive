@@ -21,7 +21,7 @@ const DRIFT_SPEED  = 0.00018;     // 자동 궤도 속도 (rad/frame)
 const INERTIA_DECAY = 0.92;       // 관성 감쇠 계수
 
 let MIRROR_MESSAGE =
-`당신은 12개의 파편을 모두 보았습니다.\n\n` +
+`당신은 8개의 파편을 모두 보았습니다.\n\n` +
 `완벽해 보이는 사람의 내부도\n` +
 `흔들리고 있다는 것.\n\n` +
 `그리고 당신의 시선이 가장 오래 머문 곳이\n` +
@@ -236,6 +236,7 @@ async function init() {
   // Scene
   scene = new Scene(document.getElementById('canvas-wrap'));
   await scene.load();
+  window._scene = scene; // 디버그용
 
   // Modules
   dataMap    = new DataMap(onNodeClick);
@@ -471,26 +472,29 @@ function setupDrag() {
 }
 
 /* ── 방별 카메라 프리셋 ─────────────────────────────────
-   각 노드 클릭 시 해당 벽/시점으로 카메라가 이동
-   camX = az / 0.9  (셰이더: az = u_cam.x * 0.9)
-   camY = el / 0.4  (셰이더: el = clamp(u_cam.y*0.4,-0.5,0.5))
+   look-around 기준: az = camX * 0.9
+   az=0 → 입구(+z) / az=π → 헤드보드(−z)
+   camX = az / 0.9
+     π/0.9 ≈ 3.49  (뒷벽 1소점)
+     π/2/0.9 ≈ 1.75 (오른쪽 1소점)   −1.75 (왼쪽 1소점)
+     3π/4/0.9 ≈ 2.62 (오른쪽-뒤 2소점) −2.62 (왼쪽-뒤 2소점)
 ──────────────────────────────────────────────────────── */
 const ROOM_CAM_PRESETS = {
   // ── 거실 (living) ──
-  r1: { camX:  0.00, camY:  0.00 },  // 소파 정면 (뒷벽 1소점)
-  r2: { camX:  1.75, camY:  0.00 },  // 창문 방향 (오른쪽 벽 1소점)
-  r3: { camX:  0.00, camY: -1.25 },  // 위에서 내려다봄 (테이블·러그)
-  r4: { camX: -1.75, camY:  0.00 },  // 왼쪽 벽 1소점
+  r1: { camX:  3.49, camY:  0.00 },  // 뒷벽·소파 1소점
+  r2: { camX:  1.75, camY:  0.00 },  // 오른쪽 창문 1소점
+  r3: { camX:  0.00, camY:  1.20 },  // 바닥·러그 내려다봄
+  r4: { camX: -1.75, camY:  0.10 },  // 왼쪽 소재벽 1소점
   // ── 서재 (study) ──
-  l1: { camX: -1.75, camY:  0.00 },  // 서가 정면
-  l2: { camX:  0.00, camY: -0.50 },  // 책상 위에서
-  l3: { camX:  1.75, camY:  0.00 },  // 오른쪽 벽 (작업등)
-  l4: { camX:  0.00, camY:  0.00 },  // 정면 전체
+  l1: { camX: -1.75, camY:  0.00 },  // 서가 1소점
+  l2: { camX:  3.49, camY:  0.50 },  // 책상 내려다봄 (뒷벽 + 하향)
+  l3: { camX:  2.62, camY:  0.00 },  // 오른쪽-뒤 코너 2소점
+  l4: { camX:  0.87, camY:  0.10 },  // 앞-오른쪽 코너 2소점
   // ── 침실 (bedroom) ──
-  s1: { camX:  0.00, camY: -0.60 },  // 침대 위에서
-  s2: { camX: -1.75, camY:  0.10 },  // 왼쪽 나이트스탠드
-  s3: { camX:  1.75, camY:  0.10 },  // 오른쪽 나이트스탠드
-  s4: { camX:  0.00, camY:  0.00 },  // 정면 헤드보드
+  s1: { camX:  3.49, camY:  0.60 },  // 침대·헤드보드 내려다봄 (1소점)
+  s2: { camX: -2.62, camY:  0.10 },  // 왼쪽-뒤 코너 2소점 (나이트스탠드)
+  s3: { camX:  2.62, camY:  0.10 },  // 오른쪽-뒤 코너 2소점 (나이트스탠드)
+  s4: { camX:  3.49, camY: -0.30 },  // 헤드보드 올려다봄 1소점
 };
 
 // 카메라 프리셋 애니메이션 (가장 짧은 경로로 회전)
@@ -559,17 +563,25 @@ function onNodeClick(nodeId) {
   connLines.setActive(nodeId);
   dataMap.dimExcept(nodeId);
 
-  // 실내 뷰에서 카메라 프리셋 이동
-  if (currentView !== 'outside' && ROOM_CAM_PRESETS[nodeId]) {
-    animateCamToPreset(ROOM_CAM_PRESETS[nodeId]);
-  }
-
   // record visit
   const count = dataMap.markVisited(nodeId);
   gazeSystem.recordVisit(nodeId);
 
-  // Shadows nodes → raise u_distort
   const node = NODES.find(n => n.id === nodeId);
+
+  // 노드 모듈 → 해당 방으로 자동 이동 + 카메라 프리셋
+  const viewMap = { logic: 'study', rest: 'living', shadows: 'bedroom' };
+  const targetView = node ? viewMap[node.mod] : null;
+  if (targetView) {
+    if (currentView !== targetView) {
+      setView(targetView);
+      if (ROOM_CAM_PRESETS[nodeId]) {
+        setTimeout(() => animateCamToPreset(ROOM_CAM_PRESETS[nodeId]), 120);
+      }
+    } else if (ROOM_CAM_PRESETS[nodeId]) {
+      animateCamToPreset(ROOM_CAM_PRESETS[nodeId]);
+    }
+  }
   if (node) {
     const targetDistort = node.mod === 'shadows' ? 1.0 : 0.0;
     gsap.to({ v: scene.uniforms.u_distort.value }, {
@@ -590,24 +602,28 @@ function onNodeClick(nodeId) {
   scene.setUniform('u_glow', 1.0);
   setTimeout(() => scene.setUniform('u_glow', 0.0), 1000);
 
-  // Shadows nodes visited tracking
+  // 거실+서재(logic·rest) 노드 방문 추적
+  if (node?.mod === 'logic' || node?.mod === 'rest') _mainVisited.add(nodeId);
+
+  // 침실(shadows) 노드 방문 추적
   if (node?.mod === 'shadows') _shadowsVisited.add(nodeId);
 
-  // All 4 Shadows nodes visited → show Shadows mirror (once)
+  // 거실+서재 8개 완료 → 메인 거울
+  if (_mainVisited.size >= 8 && !_mirrorShown) {
+    _mirrorShown = true;
+    setTimeout(() => panel.showMirror(MIRROR_MESSAGE), 2000);
+  }
+
+  // 침실 4개 완료 → Shadows 거울
   if (_shadowsVisited.size >= 4 && !_shadowsMirrorShown) {
     _shadowsMirrorShown = true;
     setTimeout(() => panel.showMirror(SHADOWS_MIRROR_MESSAGE), 800);
-  }
-
-  // All 12 nodes visited → show full mirror (once)
-  if (count >= 12 && !_mirrorShown) {
-    _mirrorShown = true;
-    setTimeout(() => panel.showMirror(MIRROR_MESSAGE), 2000);
   }
 }
 
 let _mirrorShown = false;
 let _shadowsMirrorShown = false;
+const _mainVisited    = new Set();
 const _shadowsVisited = new Set();
 
 /* ── 편집 모드 ──────────────────────────────────────── */

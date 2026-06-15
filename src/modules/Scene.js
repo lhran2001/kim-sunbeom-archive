@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
 export class Scene {
   constructor(container) {
@@ -15,16 +16,18 @@ export class Scene {
 
   /* ── bootstrap ─────────────────────────────────── */
   async load() {
+    RectAreaLightUniformsLib.init();
+
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x060504, 1);
     this.renderer.shadowMap.enabled = false;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace; // 텍스처 색상 정확하게
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
 
     /* 카메라 2개 — 외부(셰이더)용 + 실내(GLTF)용 */
     this.orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.perspCam = new THREE.PerspectiveCamera(70, 1, 0.05, 500);
+    this.perspCam = new THREE.PerspectiveCamera(78, 1, 0.05, 500);
     this.camera   = this.orthoCam;
 
     this.scene3d = new THREE.Scene();
@@ -98,12 +101,15 @@ export class Scene {
         const gltf  = await load(path);
         const model = gltf.scene;
 
-        /* 자동 정규화: 방을 ±2 범위 박스에 맞추고 바닥을 y=0 으로 */
+        /* 자동 정규화: 높이를 3유닛으로 맞추고 바닥을 y=0 으로 */
         const box    = new THREE.Box3().setFromObject(model);
         const size   = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
-        const maxXZ  = Math.max(size.x, size.z);
-        const scl    = 4.0 / maxXZ;
+        const maxDim = Math.max(size.x, size.y, size.z);
+        console.info(`[GLB] ${key} raw size: x=${size.x.toFixed(1)} y=${size.y.toFixed(1)} z=${size.z.toFixed(1)}`);
+        /* 목표 높이 3유닛 → 카메라(y=1.2)가 천장 아래에 위치 */
+        const TARGET = size.y > 0 ? 3.0 / size.y : 3.0 / maxDim;
+        const scl    = (TARGET > 0 && isFinite(TARGET)) ? TARGET : 0.001;
 
         model.scale.setScalar(scl);
         model.position.set(-center.x * scl, 0, -center.z * scl);
@@ -118,13 +124,18 @@ export class Scene {
           const mats = Array.isArray(child.material)
             ? child.material : [child.material];
           mats.forEach(mat => {
-            mat.side = THREE.DoubleSide; // 뒷면도 렌더
+            mat.side = THREE.DoubleSide;
             if (mat.map) {
               mat.map.colorSpace = THREE.SRGBColorSpace;
               mat.map.needsUpdate = true;
             }
             if (mat.normalMap)    mat.normalMap.colorSpace    = THREE.LinearSRGBColorSpace;
             if (mat.roughnessMap) mat.roughnessMap.colorSpace = THREE.LinearSRGBColorSpace;
+            /* 침실: 동그란 반사 핫스팟 방지 — roughness 최솟값 올리기 */
+            if (key === 'bedroom') {
+              if (mat.roughness !== undefined) mat.roughness = Math.max(mat.roughness, 0.72);
+              if (mat.metalness !== undefined) mat.metalness = Math.min(mat.metalness, 0.25);
+            }
             mat.needsUpdate = true;
           });
         });
@@ -160,22 +171,27 @@ export class Scene {
     this._fillLight = new THREE.PointLight(0xffffff, 0.3, 15);
     this._fillLight.position.set(-2, 1.5, 2);
 
-    /* 헤드보드 간접조명 — 헤드보드 뒤 벽면으로 올라가는 앰버 글로우 */
-    this._headLight = new THREE.PointLight(0xff9944, 0.0, 5);
-    this._headLight.position.set(0, 1.1, -1.85);   // 헤드보드 뒤 벽, 위쪽
+    /* 헤드보드 LED 라인 조명 — RectAreaLight (동그란 핫스팟 없음) */
+    this._headLights = [];
 
-    /* 헤드보드 왼쪽 */
-    this._headLightL = new THREE.PointLight(0xff8833, 0.0, 3.5);
-    this._headLightL.position.set(-0.85, 0.9, -1.8);
+    /* 상향 벽 워시 — 헤드보드 상단에서 천장 방향으로 */
+    const stripUp = new THREE.RectAreaLight(0xffc870, 0.0, 3.2, 0.06);
+    stripUp.position.set(0, 1.32, -1.74);
+    stripUp.rotation.x = Math.PI / 2; // 위쪽 방향
+    this._headLights.push(stripUp);
+    this.lightGroup.add(stripUp);
 
-    /* 헤드보드 오른쪽 */
-    this._headLightR = new THREE.PointLight(0xff8833, 0.0, 3.5);
-    this._headLightR.position.set( 0.85, 0.9, -1.8);
+    /* 하향 침대 조명 — 침대 위로 은은하게 */
+    const stripDown = new THREE.RectAreaLight(0xffb050, 0.0, 3.0, 0.06);
+    stripDown.position.set(0, 1.28, -1.74);
+    stripDown.rotation.x = -Math.PI / 2; // 아래쪽 방향
+    stripDown._mult = 0.45;
+    this._headLights.push(stripDown);
+    this.lightGroup.add(stripDown);
 
     this.lightGroup.add(
       this._ambLight, this._sunLight,
-      this._ceilLight, this._fillLight,
-      this._headLight, this._headLightL, this._headLightR
+      this._ceilLight, this._fillLight
     );
   }
 
@@ -194,9 +210,9 @@ export class Scene {
         bgCol: 0x060810,
       },
       bedroom: {
-        ambCol: 0x2a1535, ambInt: 0.55,
-        sunCol: 0x9090cc, sunInt: 0.6,  sunPos: [-2, 4, -2],
-        ceilCol: 0x8070c0, ceilInt: 0.9,
+        ambCol: 0xfff0e0, ambInt: 0.9,
+        sunCol: 0xfff5e0, sunInt: 1.5,  sunPos: [-2, 4, -2],
+        ceilCol: 0xfff0d0, ceilInt: 1.8,
         bgCol: 0x0d0818,
       },
     };
@@ -210,6 +226,12 @@ export class Scene {
     this._ceilLight.color.setHex(c.ceilCol);
     this._ceilLight.intensity = c.ceilInt;
     this.renderer.setClearColor(c.bgCol, 1);
+
+    /* 침실 아닌 방에서는 헤드라이트 완전 끄기 */
+    if (this._headLights) {
+      const off = view !== 'bedroom';
+      this._headLights.forEach(l => { if (off) l.intensity = 0; });
+    }
   }
 
   /* ── GLTF 표시 전환 ────────────────────────────── */
@@ -270,36 +292,48 @@ export class Scene {
   /* ── 밝기 조절 (0~1) ──────────────────────────── */
   setBrightness(val) {
     if (!this.lightGroup) return;
-    const t = val;
-    this._ambLight.intensity  = t * 0.5;
-    this._sunLight.intensity  = t * 0.6;
-    this._ceilLight.intensity = t * 1.2;
-    this._fillLight.intensity = t * 0.4;
+    /* 침실: 완전 어두움(0) ~ 밝은 낮 조명(1) */
+    if (this.currentView === 'bedroom') {
+      this._ambLight.intensity  = val * 0.9;
+      this._sunLight.intensity  = val * 1.5;
+      this._ceilLight.intensity = val * 1.8;
+      this._fillLight.intensity = val * 0.6;
+    } else {
+      this._ambLight.intensity  = val * 0.5;
+      this._sunLight.intensity  = val * 0.6;
+      this._ceilLight.intensity = val * 1.2;
+      this._fillLight.intensity = val * 0.4;
+    }
   }
 
-  /* 헤드보드 간접조명 강도 (0~1) */
+  /* 헤드보드 간접조명 강도 (0~1) — 침실 전용 */
   setHeadLight(val) {
-    if (!this._headLight) return;
-    this._headLight.intensity  = val * 1.2;
-    this._headLightL.intensity = val * 0.8;
-    this._headLightR.intensity = val * 0.8;
+    if (!this._headLights || this.currentView !== 'bedroom') return;
+    const baseMax = 6.0;
+    this._headLights.forEach(l => {
+      const mult = l._mult !== undefined ? l._mult : 1.0;
+      l.intensity = val * baseMax * mult;
+    });
   }
 
   /* ── 실내 카메라 업데이트 (매 프레임) ──────────── */
   updateInteriorCamera(camX, camY) {
     if (!this.interiorMode) return;
 
-    const az   = camX * 0.9;
-    const el   = Math.max(-0.5, Math.min(0.5, camY * 0.4));
-    const camR = 1.8;
-    const camH = 1.2 + el * 0.7;
+    /* 드래그 → 방 중앙에서 360° 돌아보기 (look-around)
+       az=0: 입구(+z) 방향 / az=π: 헤드보드(-z) 방향 */
+    const az = camX * 0.9;
+    const el = Math.max(-0.6, Math.min(0.5, camY * 0.5));
 
-    this.perspCam.position.set(
-      Math.sin(az) * camR,
-      camH,
-      -Math.cos(az) * camR
+    /* 카메라: 방 중앙 눈높이 고정 */
+    this.perspCam.position.set(0, 1.18, 0.2);
+
+    /* 시선: az 방향으로 먼 곳을 바라봄 */
+    this.perspCam.lookAt(
+      Math.sin(az) * 6,
+      1.02 - el * 2.0,
+      0.2 + Math.cos(az) * 6
     );
-    this.perspCam.lookAt(0, 0.8, 0);
   }
 
   /* ── uniforms ──────────────────────────────────── */
